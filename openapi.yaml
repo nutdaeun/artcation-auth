@@ -1,0 +1,203 @@
+openapi: 3.0.3
+info:
+  title: artcation 인증 토큰 API (발췌)
+  description: |
+    팀 프로젝트 artcation의 API 계약 중 인증 토큰(로그인 발급·로그아웃 폐기·재발급) 부분만 발췌했다.
+    intent → spec 문서를 기준으로 작성했으며, 기능 ID(operationId)는 spec 문서와 같다.
+  version: 0.1.0
+servers:
+  - url: http://localhost:8080
+    description: 로컬 개발 서버 (예시)
+
+tags:
+  - name: USR-AUTH
+    description: 로그인·로그아웃·토큰 재발급
+
+paths:
+  /api/v1/auth/login:
+    post:
+      operationId: USR-AUTH-004
+      tags: [USR-AUTH]
+      summary: 로그인
+      description: |
+        아이디·비밀번호로 로그인한다. 인증 없이 호출한다.
+
+        **입력 제약**
+        - `loginId` — 필수. 가입 시 설정한 아이디
+        - `password` — 필수. 가입 시 설정한 비밀번호
+
+        입력 형식은 서버에서 검사하지 않는다.
+        실패 사유(미존재 아이디·비밀번호 불일치·탈퇴 계정)는 구분하지 않고 모두 401이다.
+
+        성공 시 Access Token(15분 만료)과 Refresh Token(슬라이딩 만료 2주, 절대 만료 60일)을
+        httpOnly·Secure·SameSite=Lax 쿠키로 내려준다.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [loginId, password]
+              properties:
+                loginId:
+                  type: string
+                  description: 가입 시 설정한 아이디
+                password:
+                  type: string
+                  format: password
+      responses:
+        '200':
+          description: 로그인 성공. Access·Refresh Token을 쿠키로 발급한다.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+              example:
+                message: success
+        '400':
+          description: 필수 필드(loginId, password) 누락 또는 타입 오류.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: INVALID_INPUT
+                message: 입력 값이 올바르지 않습니다
+        '401':
+          description: >
+            존재하지 않는 아이디, 비밀번호 불일치, 또는 탈퇴한 계정
+            — 어느 경우인지 구분하지 않는다(계정 존재 여부 비노출).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: INVALID_CREDENTIALS
+                message: 아이디 또는 비밀번호가 올바르지 않습니다
+
+  /api/v1/auth/logout:
+    post:
+      operationId: USR-AUTH-005
+      tags: [USR-AUTH]
+      summary: 로그아웃
+      description: |
+        현재 세션을 종료한다. 토큰은 쿠키로 전달된다.
+
+        **입력 제약**
+        - 요청 본문 없음
+        - `access_token` / `refresh_token` 쿠키 — 있으면 사용, 없거나 만료돼도 무방
+
+        멱등하게 동작한다. 이미 만료·무효화된 토큰으로 호출해도 200을 반환하며,
+        서버는 Refresh Token을 폐기하고 두 쿠키를 만료시킨다.
+      security:
+        - accessTokenCookie: []
+        - refreshTokenCookie: []
+      responses:
+        '200':
+          description: 로그아웃 처리 (멱등)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+              example:
+                message: success
+
+  /api/v1/auth/token/refresh:
+    post:
+      operationId: USR-AUTH-006
+      tags: [USR-AUTH]
+      summary: Access Token 재발급
+      description: |
+        Refresh Token으로 새 Access Token을 발급받는다.
+
+        **입력 제약**
+        - 요청 본문 없음
+        - `refresh_token` 쿠키 — 필수. 슬라이딩 만료 2주, 절대 만료 60일
+
+        rotation이 적용되어 호출할 때마다 Refresh Token도 새로 발급되고 기존 것은 폐기된다.
+
+        **직전 토큰 재사용 처리**
+        - 교체 후 30초(유예시간) 이내 — 409. 세션은 유지되고 새 토큰은 발급하지 않는다.
+          여러 탭·동시 요청이 같은 토큰으로 재발급하면 하나만 200이고 나머지는 409다.
+          클라이언트는 로그아웃 처리하지 말고, 이미 갱신된 쿠키로 원래 요청을 다시 보낸다.
+        - 유예시간 경과 후 — 탈취로 간주해 해당 계정의 모든 Refresh Token을 삭제하고 401.
+      security:
+        - refreshTokenCookie: []
+      responses:
+        '200':
+          description: 새 Access Token·새 Refresh Token을 쿠키로 발급한다(rotation, 기존 Refresh Token은 폐기).
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+              example:
+                message: success
+        '401':
+          description: >
+            Refresh Token 없음·형식 오류·슬라이딩 만료(2주)·절대 만료(60일)·
+            유예시간이 지난 폐기 토큰 재사용 — 모두 재로그인을 요구한다.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: REFRESH_TOKEN_INVALID
+                message: 토큰이 유효하지 않습니다
+        '409':
+          description: >
+            교체 후 30초 이내에 직전 Refresh Token이 다시 사용됨(동시 요청·재시도).
+            세션은 유지되므로 재로그인하지 않고, 이미 갱신된 쿠키로 원래 요청을 재시도한다.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: REFRESH_TOKEN_ALREADY_ROTATED
+                message: 이미 갱신된 토큰입니다
+
+components:
+  securitySchemes:
+    accessTokenCookie:
+      type: apiKey
+      in: cookie
+      name: access_token
+      description: 로그인 시 httpOnly 쿠키로 발급되는 Access Token(15분 만료).
+    refreshTokenCookie:
+      type: apiKey
+      in: cookie
+      name: refresh_token
+      description: 로그인 시 httpOnly 쿠키로 발급되는 Refresh Token(슬라이딩 2주·절대 만료 60일, rotation 적용).
+
+  schemas:
+    Success:
+      type: object
+      description: >
+        공통 성공 응답 형태. message는 항상 "success" 고정이며 사용자에게 보여줄 문구는
+        프론트가 각 화면에서 정한다.
+      required: [message]
+      properties:
+        message:
+          type: string
+          enum: [success]
+          example: success
+    Error:
+      type: object
+      description: 공통 에러 응답 형태. code는 프론트 분기용 에러 코드다.
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: 에러 코드. 프론트는 message가 아니라 이 값으로 분기한다
+          example: INVALID_INPUT
+        message:
+          type: string
+          example: 요청을 처리할 수 없습니다
