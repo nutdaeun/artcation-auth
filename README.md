@@ -3,7 +3,7 @@
 공연 아티스트와 호스트를 연결하는 팀 프로젝트 **artcation**에서 제가 맡은 회원 인증(USR-AUTH) 설계 문서입니다.
 원본은 팀의 private 저장소에 있으며, 본인 담당 부분만 발췌해 구성했습니다. 프로젝트는 현재 중단 상태입니다.
 
-- **API 계약 보기:** [Swagger UI](https://nutdaeun.github.io/artcation-auth/)
+- **API 계약 보기:** [Swagger UI](./index.html)
 - **담당 범위**
     - 설계: 인증 도메인의 intent·spec·OpenAPI 계약 초안 작성(Claude로 초안 생성 후 직접 검토·수정), 이후 팀 리뷰를 거쳐 함께 다듬음
     - 구현: 로그인 토큰 발급, 로그아웃, Access Token 재발급(Refresh Token Rotation), 비밀번호 변경 시 세션 무효화
