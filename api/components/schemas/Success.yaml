@@ -1,0 +1,15 @@
+# 성공 응답 공통 래퍼(ApiResponse.success()). data가 있는 응답은
+# path 파일에서 allOf로 data를 덧붙인다.
+type: object
+description: >
+  공통 성공 응답 형태. message는 항상 "success" 고정이며 사용자에게 보여줄 문구는
+  프론트가 각 화면에서 정한다(계약에는 적지 않는다).
+  code는 성공 시 null이라 응답에서 제외된다.
+required:
+  - message
+properties:
+  message:
+    type: string
+    enum: [success]
+    description: 성공 응답은 항상 `success` 고정이다
+    example: success

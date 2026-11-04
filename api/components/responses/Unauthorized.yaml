@@ -1,0 +1,11 @@
+# 모든 호스트 전용 operation이 공유하는 401. 응답 전체를 $ref로 재사용하므로
+# 대표 문구는 이 파일에 적는다(호출부에서 example을 덮어쓸 수 없다).
+description: >
+  로그인하지 않았거나 Access Token이 없음·만료됨. 재로그인 또는 토큰 재발급(USR-AUTH-006)이 필요하다.
+content:
+  application/json:
+    schema:
+      $ref: '../schemas/Error.yaml'
+    example:
+      code: UNAUTHORIZED
+      message: 로그인이 필요합니다

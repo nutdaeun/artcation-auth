@@ -1,0 +1,73 @@
+openapi: 3.0.3
+info:
+    title: artcation API (USR-AUTH 발췌)
+    description: |
+        artcation API 계약 중 회원 인증(USR-AUTH) 도메인만 발췌했다.
+        intent/spec 문서를 기준으로 작성되며, 코드 레포와 내용이 어긋나면 이 파일이 기준이다.
+
+    version: 0.1.0
+servers:
+    - url: http://localhost:8080
+      description: 로컬 예시 서버
+
+tags:
+    - name: USR-AUTH
+      description: 회원가입·로그인·비밀번호 재설정·내 정보 조회 (지금 구현 범위. 카카오 로그인/가입·약관 동의·회원 탈퇴는 추후 구현)
+
+paths:
+    /api/v1/auth/send-code:
+        $ref: './api/paths/USR-AUTH.yaml#/sendVerificationCode'
+    /api/v1/auth/verify-code:
+        $ref: './api/paths/USR-AUTH.yaml#/verifyVerificationCode'
+    /api/v1/auth/signup:
+        $ref: './api/paths/USR-AUTH.yaml#/signupEmail'
+
+    /api/v1/auth/login:
+        $ref: './api/paths/USR-AUTH.yaml#/login'
+    /api/v1/auth/logout:
+        $ref: './api/paths/USR-AUTH.yaml#/logout'
+    /api/v1/auth/token/refresh:
+        $ref: './api/paths/USR-AUTH.yaml#/tokenRefresh'
+
+    /api/v1/auth/find-login-id:
+        $ref: './api/paths/USR-AUTH.yaml#/findId'
+
+    /api/v1/auth/password-reset/request:
+        $ref: './api/paths/USR-AUTH.yaml#/requestReset'
+    /api/v1/auth/password-reset/confirm:
+        $ref: './api/paths/USR-AUTH.yaml#/confirmReset'
+
+    /api/v1/users/me:
+        $ref: './api/paths/USR-AUTH.yaml#/myProfile'
+
+components:
+    securitySchemes:
+        accessTokenCookie:
+            type: apiKey
+            in: cookie
+            name: access_token
+            description: 로그인 시 httpOnly 쿠키로 발급되는 Access Token(15분 만료).
+        refreshTokenCookie:
+            type: apiKey
+            in: cookie
+            name: refresh_token
+            description: 로그인 시 httpOnly 쿠키로 발급되는 Refresh Token(슬라이딩 2주·절대 만료 60일, rotation 적용).
+        emailVerifiedCookie:
+            type: apiKey
+            in: cookie
+            name: email_verification_token
+            description: >
+                이메일 인증코드 검증(USR-AUTH-002) 성공 시 httpOnly·Secure 쿠키로 발급되는 이메일 인증 완료 토큰(10분 TTL).
+                회원가입 완료(USR-AUTH-003)에서 인증된 이메일을 식별하는 데 쓴다.
+
+    schemas:
+        Success:
+            $ref: './api/components/schemas/Success.yaml'
+        Error:
+            $ref: './api/components/schemas/Error.yaml'
+
+    responses:
+        ValidationError:
+            $ref: './api/components/responses/ValidationError.yaml'
+        Unauthorized:
+            $ref: './api/components/responses/Unauthorized.yaml'

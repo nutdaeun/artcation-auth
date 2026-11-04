@@ -1,0 +1,19 @@
+description: >
+  입력 형식이 올바르지 않음(이메일 형식, 비밀번호 형식, 인증코드 형식 등).
+  @Valid 검증 실패 시 message는 "필드명: 사유" 형태로 조합되며, 여러 필드가 동시에
+  실패하면 ", "로 이어진다. 본문 파싱 자체가 실패하면 고정 문구가 내려간다.
+content:
+  application/json:
+    schema:
+      $ref: '../schemas/Error.yaml'
+    examples:
+      fieldError:
+        summary: 필드 검증 실패
+        value:
+          code: INVALID_INPUT
+          message: 'email: 이메일 형식으로 입력해주세요'
+      parseError:
+        summary: 본문 파싱/바인딩 실패
+        value:
+          code: INVALID_INPUT
+          message: 잘못된 입력값입니다

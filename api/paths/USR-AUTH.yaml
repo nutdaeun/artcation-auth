@@ -1,0 +1,674 @@
+# URL 매핑 (openapi.yaml의 paths: 참고)
+#   sendVerificationCode   -> POST /api/v1/auth/send-code
+#   verifyVerificationCode -> POST /api/v1/auth/verify-code
+#   signupEmail            -> POST /api/v1/auth/signup
+#   login                  -> POST /api/v1/auth/login
+#   logout                 -> POST /api/v1/auth/logout
+#   tokenRefresh           -> POST /api/v1/auth/token/refresh
+#   findId                 -> POST /api/v1/auth/find-login-id
+#   requestReset           -> POST /api/v1/auth/password-reset/request
+#   confirmReset           -> POST /api/v1/auth/password-reset/confirm
+#   myProfile              -> GET  /api/v1/users/me
+
+sendVerificationCode:
+  post:
+    operationId: USR-AUTH-001
+    tags: [USR-AUTH]
+    summary: 이메일 인증코드 발송
+    description: |
+      가입하려는 이메일로 인증코드를 발송한다. 인증 없이 호출한다.
+
+      **입력 제약**
+      - `email` — 이메일 형식. 이미 가입된 이메일이면 409
+
+      발송된 인증코드는 영문+숫자 혼합 6자리이며 10분간 유효하다.
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [email]
+            properties:
+              email:
+                type: string
+                format: email
+    responses:
+      '200':
+        description: >
+          인증코드 발송 완료.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Success.yaml'
+            example:
+              message: success
+      '409':
+        description: 이미 가입된 이메일
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: EMAIL_DUPLICATED
+              message: 이미 가입된 이메일입니다
+      '429':
+        description: 10분 내 발송 횟수 5회 초과
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: SEND_LIMIT_EXCEEDED
+              message: 요청 한도를 초과했습니다
+      '500':
+        description: 인증코드 발급 실패
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: VERIFICATION_CODE_ISSUE_FAILED
+              message: 인증코드 발급에 실패했습니다
+      '502':
+        description: SMTP 이메일 발송 요청 실패
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: EMAIL_SEND_FAILED
+              message: 이메일 발송에 실패했습니다
+
+verifyVerificationCode:
+  post:
+    operationId: USR-AUTH-002
+    tags: [USR-AUTH]
+    summary: 이메일 인증코드 검증
+    description: |
+      발송된 인증코드를 검증한다. 인증 없이 호출한다.
+
+      **입력 제약**
+      - `email` — 이메일 형식. 인증코드를 발송한 이메일과 같아야 한다
+      - `code` — 영문+숫자 혼합 6자리(`^[A-Za-z0-9]{6}$`). 대소문자 구분
+
+      코드 불일치 시 재입력 횟수 제한은 없다. 성공하면 이메일 인증 완료 토큰이
+      쿠키로 발급되며(10분 TTL), 그 안에 회원가입 완료(USR-AUTH-003)를 마쳐야 한다.
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [email, code]
+            properties:
+              email:
+                type: string
+                format: email
+              code:
+                type: string
+                pattern: '^[A-Za-z0-9]{6}$'
+                description: 이메일로 받은 영문+숫자 혼합 6자리 인증코드. 발급 후 10분 경과 시 만료
+    responses:
+      '200':
+        description: >
+          인증 완료.
+        headers:
+          Set-Cookie:
+            schema:
+              type: string
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Success.yaml'
+            example:
+              message: success
+      '401':
+        description: 코드 불일치(재입력 횟수 제한 없음), 또는 코드 만료(발급 후 10분 경과)
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            examples:
+              codeMismatch:
+                summary: 코드 불일치
+                value:
+                  code: VERIFICATION_CODE_MISMATCH
+                  message: 인증코드가 올바르지 않습니다
+              codeExpired:
+                summary: 코드 만료 또는 존재하지 않음
+                value:
+                  code: VERIFICATION_CODE_EXPIRED
+                  message: 인증코드가 만료되었습니다
+
+signupEmail:
+  post:
+    operationId: USR-AUTH-003
+    tags: [USR-AUTH]
+    summary: 이메일 회원가입 완료
+    description: |
+      비밀번호·연령 확인을 받아 가입을 완료한다.
+      이메일은 요청 본문으로 받지 않고, 이메일 인증 완료 토큰(`email_verification_token`)으로 식별한다.
+
+      **입력 제약**
+      - `loginId` — 4~20자, 영문·숫자·언더스코어만 허용(특수문자·공백 금지), 중복 불가
+      - `password` — 8자 이상 20자 이하, 영문+숫자+특수문자 조합 필수(허용 특수문자: !@#$%^&*()_+-=[]{},.<>?)
+      - `isOver14` — `true`만 허용. `false`거나 생략하면 `REQUIRED_TERMS_NOT_AGREED`
+      - `agreedToTerms`, `agreedToPrivacy` — 필수 약관. 하나라도 `false`거나 생략하면 `REQUIRED_TERMS_NOT_AGREED`
+      - `agreedToMarketing` — 선택 약관. 생략 시 `false`로 처리
+
+      인증 완료 후 10분이 지나면 토큰이 만료되어 401이 나고, 처음부터 다시 진행해야 한다.
+      성공 시 로그인 상태로 전환된다.
+    security:
+      - emailVerifiedCookie: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [loginId, password, isOver14, agreedToTerms, agreedToPrivacy]
+            properties:
+              loginId:
+                type: string
+                minLength: 4
+                maxLength: 20
+                pattern: '^[A-Za-z0-9_]{4,20}$'
+                description: 4~20자. 영문·숫자·언더스코어만 허용(특수문자·공백 금지). 중복 불가
+              password:
+                type: string
+                minLength: 8
+                maxLength: 20
+                pattern: '^(?=.*[A-Za-z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{},.<>?]).{8,20}$'
+                description: 8자 이상 20자 이하, 영문+숫자+특수문자 조합 필수(허용 특수문자 !@#$%^&*()_+-=[]{},.<>?)
+              isOver14:
+                type: boolean
+                description: >
+                  만 14세 이상 확인(자기 신고, 실제 생년월일 검증 아님).
+                  true만 허용. false거나 생략하면 REQUIRED_TERMS_NOT_AGREED
+              agreedToTerms:
+                type: boolean
+                description: 이용약관 동의(필수). true만 허용. false거나 생략하면 REQUIRED_TERMS_NOT_AGREED
+              agreedToPrivacy:
+                type: boolean
+                description: 개인정보 수집 및 이용 동의(필수). true만 허용. false거나 생략하면 REQUIRED_TERMS_NOT_AGREED
+              agreedToMarketing:
+                type: boolean
+                default: false
+                description: 마케팅 정보 수신 동의(선택). 생략 시 false
+    responses:
+      '201':
+        description: >
+          가입 완료. 이메일 인증 완료 토큰은 즉시 폐기(1회용)하고 해당 토큰을 만료시킨다.
+        headers:
+          Set-Cookie:
+            schema:
+              type: string
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Success.yaml'
+            example:
+              message: success
+      '400':
+        description: >
+          아이디·비밀번호 형식 오류(INVALID_INPUT), 또는 만 14세 미만·필수 약관 미동의
+          (REQUIRED_TERMS_NOT_AGREED — 둘을 구분하지 않고 한 코드로 반환한다).
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            examples:
+              invalidLoginId:
+                summary: 아이디 형식 오류(4자 미만, 20자 초과, 또는 허용되지 않는 문자 포함)
+                value:
+                  code: INVALID_INPUT
+                  message: 아이디는 4~20자의 영문, 숫자, 언더스코어로 입력해주세요
+              invalidPassword:
+                summary: 비밀번호 형식 오류(영문·숫자·특수문자 중 하나 이상 누락, 8자 미만 또는 20자 초과)
+                value:
+                  code: INVALID_INPUT
+                  message: 비밀번호는 8-20자의 영문+숫자+특수문자 조합으로 설정해주세요
+              termsNotAgreed:
+                summary: 만 14세 미만 또는 필수 약관 미동의
+                value:
+                  code: REQUIRED_TERMS_NOT_AGREED
+                  message: 만 14세 이상, 이용약관, 개인정보처리방침에 모두 동의해야 합니다
+      '401':
+        description: 이메일 인증 완료 토큰 없음·유효하지 않음, 또는 인증 완료 후 10분 초과(이메일 인증 세션 만료)
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: EMAIL_VERIFICATION_EXPIRED
+              message: 이메일 인증이 만료되었습니다
+      '409':
+        description: >
+          이미 가입된 이메일 또는 이미 사용 중인 아이디
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            examples:
+              emailDuplicate:
+                summary: 이메일 중복
+                value:
+                  code: EMAIL_DUPLICATED
+                  message: 이미 가입된 이메일입니다
+              loginIdDuplicate:
+                summary: 아이디 중복
+                value:
+                  code: LOGIN_ID_DUPLICATED
+                  message: 이미 사용 중인 아이디입니다
+
+login:
+  post:
+    operationId: USR-AUTH-004
+    tags: [USR-AUTH]
+    summary: 로그인
+    description: |
+      아이디·비밀번호로 로그인한다. 인증 없이 호출한다.
+
+      **입력 제약**
+      - `loginId` — 필수. 가입 시 설정한 아이디
+      - `password` — 필수. 가입 시 설정한 비밀번호
+
+      입력 형식은 서버에서 검사하지 않는다.
+      실패 사유(미존재 아이디·비밀번호 불일치·탈퇴 계정)는 구분하지 않고 모두 401이다.
+     
+      성공 시 Access·Refresh Token이 쿠키로 발급된다.
+      Access Token(15분 만료)과 Refresh Token(슬라이딩 만료 2주, 절대 만료 60일)을
+      httpOnly·Secure·SameSite=Lax 쿠키로 내려준다.
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [loginId, password]
+            properties:
+              loginId:
+                type: string
+                description: 가입 시 설정한 아이디
+              password:
+                type: string
+    responses:
+      '200':
+        description: >
+          로그인 성공.
+        headers:
+          Set-Cookie:
+            schema:
+              type: string
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Success.yaml'
+            example:
+              message: success
+      '400':
+        description: >
+          필수 필드(loginId, password) 누락 또는 타입 오류.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: INVALID_INPUT
+              message: 입력 값이 올바르지 않습니다
+      '401':
+        description: >
+          존재하지 않는 아이디, 비밀번호 불일치, 또는 탈퇴한 계정
+          — 어느 경우인지 구분하지 않는다.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: INVALID_CREDENTIALS
+              message: 아이디 또는 비밀번호가 올바르지 않습니다
+
+logout:
+  post:
+    operationId: USR-AUTH-005
+    tags: [USR-AUTH]
+    summary: 로그아웃
+    description: |
+      현재 세션을 종료한다. 토큰은 쿠키로 전달된다.
+
+      **입력 제약**
+      - 요청 본문 없음
+      - `access_token` / `refresh_token` 쿠키 — 있으면 사용, 없거나 만료돼도 무방
+
+      멱등하게 동작한다. 이미 만료·무효화된 토큰으로 호출해도 200을 반환하며,
+      서버는 Refresh Token을 폐기하고 두 쿠키를 만료시킨다.
+    security:
+      - accessTokenCookie: []
+      - refreshTokenCookie: []
+    responses:
+      '200':
+        description: >
+          로그아웃 처리
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Success.yaml'
+            example:
+              message: success
+
+tokenRefresh:
+  post:
+    operationId: USR-AUTH-006
+    tags: [USR-AUTH]
+    summary: Access Token 재발급
+    description: |
+      Refresh Token으로 새 Access Token을 발급받는다.
+
+      **입력 제약**
+      - 요청 본문 없음
+      - `refresh_token` 쿠키 — 필수. 슬라이딩 만료 2주, 절대 만료 60일
+
+      rotation이 적용되어 호출할 때마다 Refresh Token도 새로 발급되고 기존 것은 폐기된다.
+
+      **직전 토큰 재사용 처리**
+      - 교체 후 30초(유예시간) 이내 — 409. 세션은 유지되고 새 토큰은 발급하지 않는다.
+        여러 탭·동시 요청이 같은 토큰으로 재발급하면 하나만 200이고 나머지는 409다.
+        클라이언트는 로그아웃 처리하지 말고, 이미 갱신된 쿠키로 원래 요청을 다시 보낸다.
+      - 유예시간 경과 후 — 탈취로 간주해 해당 계정의 모든 Refresh Token을 삭제하고 401.
+    security:
+      - refreshTokenCookie: []
+    responses:
+      '200':
+        description: >
+          새 Access Token·새 Refresh Token을 쿠키로 발급한다(rotation, 기존 Refresh Token은 폐기).
+        headers:
+          Set-Cookie:
+            schema:
+              type: string
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Success.yaml'
+            example:
+              message: success
+      '401':
+        description: >
+          Refresh Token 없음·형식 오류·슬라이딩 만료(2주)·절대 만료(60일)·
+          유예시간이 지난 폐기 토큰 재사용 — 모두 재로그인을 요구한다.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: REFRESH_TOKEN_INVALID
+              message: 토큰이 유효하지 않습니다
+      '409':
+        description: >
+          교체 후 30초 이내에 직전 Refresh Token이 다시 사용됨(동시 요청·재시도).
+          세션은 유지되므로 재로그인하지 않고, 이미 갱신된 쿠키로 원래 요청을 재시도한다.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: REFRESH_TOKEN_ALREADY_ROTATED
+              message: 이미 갱신된 토큰입니다
+
+findId:
+  post:
+    operationId: USR-AUTH-009
+    tags: [USR-AUTH]
+    summary: 아이디 찾기
+    description: |
+      가입 시 사용한 이메일로 loginId를 조회해 발송한다. 인증 없이 호출한다.
+
+      **입력 제약**
+      - `email` — 이메일 형식.
+
+      계정이 존재하면 해당 이메일로 loginId를 발송한다.
+      계정이 존재하지 않으면 404를 반환한다(사용자가 어떤 이메일로 가입했는지 모를 수 있으므로 존재 여부를 명시한다).
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [email]
+            properties:
+              email:
+                type: string
+                format: email
+    responses:
+      '200':
+        description: 아이디 발송 완료.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Success.yaml'
+            example:
+              message: success
+      '400':
+        $ref: '../components/responses/ValidationError.yaml'
+      '404':
+        description: 해당 이메일로 가입된 계정 없음
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: ACCOUNT_NOT_FOUND
+              message: 해당 이메일로 가입된 계정이 없습니다
+      '429':
+        description: 10분 내 발송 횟수 5회 초과
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: SEND_LIMIT_EXCEEDED
+              message: 요청 한도를 초과했습니다
+      '502':
+        description: SMTP 이메일 발송 요청 실패
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: EMAIL_SEND_FAILED
+              message: 이메일 발송에 실패했습니다
+
+requestReset:
+  post:
+    operationId: USR-AUTH-007
+    tags: [USR-AUTH]
+    summary: 비밀번호 재설정 요청
+    description: |
+      이메일과 아이디가 일치하는 계정에 재설정 토큰을 발송한다. 인증 없이 호출한다.
+
+      **입력 제약**
+      - `email` — 이메일 형식.
+      - `loginId` — 가입 시 설정한 아이디.
+
+      이메일과 아이디가 모두 일치해야 발송한다. 어느 쪽이 틀렸는지 구분하지 않는다.
+      발송되는 재설정 토큰은 영문+숫자 혼합 6자리이며 30분간 유효하다.
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [email, loginId]
+            properties:
+              email:
+                type: string
+                format: email
+              loginId:
+                type: string
+    responses:
+      '200':
+        description: 이메일·아이디 일치 확인 후 재설정 안내 메일 발송 완료.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Success.yaml'
+            example:
+              message: success
+      '400':
+        $ref: '../components/responses/ValidationError.yaml'
+      '401':
+        description: 이메일·아이디 불일치(존재하지 않는 이메일, 잘못된 아이디, 또는 조합이 맞지 않는 경우 모두 포함)
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: INVALID_EMAIL_OR_LOGIN_ID
+              message: 이메일 또는 아이디가 올바르지 않습니다
+      '500':
+        description: 재설정 토큰 발급 실패(SET NX EX 5회 재시도 모두 충돌)
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: VERIFICATION_CODE_ISSUE_FAILED
+              message: 인증코드 발급에 실패했습니다
+      '502':
+        description: SMTP 이메일 발송 요청 실패
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: EMAIL_SEND_FAILED
+              message: 이메일 발송에 실패했습니다
+
+confirmReset:
+  post:
+    operationId: USR-AUTH-008
+    tags: [USR-AUTH]
+    summary: 비밀번호 재설정 완료
+    description: |
+      재설정 토큰을 검증하고 비밀번호를 새 값으로 변경한다. 인증 없이 호출한다.
+
+      **입력 제약**
+      - `resetToken` — 영문+숫자 혼합 6자리(`^[A-Za-z0-9]{6}$`). 발급 후 30분간 유효, 1회용
+      - `newPassword` — 8자 이상 20자 이하, 영문+숫자+특수문자 조합 필수
+
+      성공하면 토큰을 즉시 폐기하고, 해당 계정의 Refresh Token을 전부 삭제해
+      기존 로그인 세션을 모두 끊는다. 재설정 후에는 다시 로그인해야 한다.
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [resetToken, newPassword]
+            properties:
+              resetToken:
+                type: string
+                pattern: '^[A-Za-z0-9]{6}$'
+                description: 이메일로 받은 영문+숫자 혼합 6자리 재설정 토큰. 30분 유효, 1회용
+              newPassword:
+                type: string
+                minLength: 8
+                maxLength: 20
+                pattern: '^(?=.*[A-Za-z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{},.<>?]).{8,20}$'
+                description: 8자 이상 20자 이하, 영문+숫자+특수문자 조합 필수(허용 특수문자 !@#$%^&*()_+-=[]{},.<>?)
+    responses:
+      '200':
+        description: >
+          비밀번호 변경 완료. 재설정 토큰은 즉시 폐기(1회용)하고,
+          해당 계정의 Refresh Token을 전체 삭제해 기존 로그인 세션을 모두 끊는다.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Success.yaml'
+            example:
+              message: success
+      '400':
+        description: 새 비밀번호 형식 오류
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: INVALID_INPUT
+              message: 비밀번호는 8-20자의 영문+숫자+특수문자 조합으로 설정해주세요
+      '401':
+        description: 재설정 토큰 만료(30분 경과)·이미 사용된 토큰·존재하지 않거나 조작된 토큰
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: RESET_TOKEN_INVALID
+              message: 재설정 링크가 만료되었거나 유효하지 않습니다
+
+myProfile:
+  get:
+    operationId: USR-AUTH-010
+    tags: [USR-AUTH]
+    summary: 내 정보 조회
+    description: |
+      로그인한 본인의 계정 정보를 조회한다.
+
+      **입력 제약**
+      - 요청 본문 없음
+      - `access_token` 쿠키 — 필수
+
+      쿠키의 Access Token에서 사용자를 식별하므로 조회 대상을 지정하는 파라미터가 없다.
+      `role`은 가입 직후 `USER`이며, 아티스트·호스트 전환을 거치면 `ARTIST`·`HOST`가 된다.
+    security:
+      - accessTokenCookie: []
+    responses:
+      '200':
+        description: 본인 계정 정보.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '../components/schemas/Success.yaml'
+                - type: object
+                  required: [data]
+                  properties:
+                    data:
+                      type: object
+                      required: [id, email, loginId, role]
+                      properties:
+                        id:
+                          type: integer
+                          format: int64
+                        email:
+                          type: string
+                          format: email
+                        loginId:
+                          type: string
+                        role:
+                          type: string
+                          enum: [USER, ARTIST, HOST, ADMIN]
+            example:
+              message: success
+              data:
+                id: 20
+                email: artist@example.com
+                loginId: artcationuser
+                role: USER
+      '401':
+        $ref: '../components/responses/Unauthorized.yaml'
+      '404':
+        description: 토큰은 유효하지만 해당 계정이 존재하지 않음(탈퇴 등)
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas/Error.yaml'
+            example:
+              code: ACCOUNT_NOT_FOUND
+              message: 해당 이메일로 가입된 계정이 없습니다
